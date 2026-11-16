@@ -4431,6 +4431,39 @@ async def test_tool_result_triggers_response_when_idle() -> None:
     assert 'response.create' in ws.sent_types()
 
 
+@pytest.mark.parametrize(
+    'response',
+    [
+        pytest.param({'id': 'r1', 'status': 'completed', 'output': [{'type': 'function_call'}]}, id='readable'),
+        pytest.param('garbled', id='unreadable'),
+        pytest.param({'status': 'completed', 'output': [{'type': 'function_call'}]}, id='no-id'),
+    ],
+)
+async def test_tool_result_triggers_response_after_any_response_done(response: object) -> None:
+    # A `response.done` the connection can't read, or one without `response.id`, still ends the active
+    # response, so its tool calls are complete and their results must ask for the model's answer.
+    frames = [
+        {'type': 'response.created', 'event_id': 'e1', 'response': {'id': 'r1'}},
+        {
+            'type': 'response.function_call_arguments.done',
+            'event_id': 'e2',
+            'response_id': 'r1',
+            'item_id': 'i1',
+            'output_index': 0,
+            'call_id': 'c1',
+            'name': 't',
+            'arguments': '{}',
+        },
+        {'type': 'response.done', 'event_id': 'e3', 'response': response},
+    ]
+    ws = FakeWebSocket([json.dumps(frame) for frame in frames])
+    conn = OpenAIRealtimeConnection(ws)  # type: ignore[arg-type]
+    await collect_codec_events(conn)
+
+    await conn.send(ToolResult(tool_call_id='c1', output='x'))
+    assert [json.loads(s)['type'] for s in ws.sent] == ['conversation.item.create', 'response.create']
+
+
 async def _drain(conn: OpenAIRealtimeConnection) -> None:
     async for _ in conn:
         pass
